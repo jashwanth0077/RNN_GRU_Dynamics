@@ -1,5 +1,5 @@
 # RNN_GRU_Dynamics
-This assignment is inspired by [https://proceedings.mlr.press/v28/pascanu13.pdf](Pascanu et al’s paper) on the learning dynamics of RNNs. Here,
+This assignment is inspired by [Pascanu et al’s paper](https://proceedings.mlr.press/v28/pascanu13.pdf) on the learning dynamics of RNNs. Here,
 you will:
 1. Implement a vanilla RNN and a GRU from the equations (no torch.nn.RNN/GRU).
 2. Train them on synthetic long-range dependency tasks.
