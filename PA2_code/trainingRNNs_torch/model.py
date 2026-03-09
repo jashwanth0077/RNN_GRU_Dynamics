@@ -10,21 +10,23 @@ import torch.nn.functional as F
 def spectral_radius(mat: np.ndarray) -> float:
     # The spectral radius of a matrix is the largest absolute value of its eigenvalues.
     # mat is (H,H)
-    pass
+    if mat.size == 0: return 0.0
+    return float(np.max(np.abs(np.linalg.eigvals(mat))))
 
 
 # DO THIS
 def _tanh_saturation_distance(h: torch.Tensor) -> torch.Tensor:
     """Distance to saturation for tanh outputs in [-1, 1].
     """
-    pass
+    return 1.0 - torch.abs(h)
 
 
 # DO THIS
 def _sigmoid_saturation_distance(h: torch.Tensor) -> torch.Tensor:
     """Distance to saturation for sigmoid outputs in [0, 1].
     """
-    pass
+    return torch.min(h, 1.0 - h)
+    
 
 
 class VanillaRNN(nn.Module):
@@ -127,23 +129,25 @@ class VanillaRNN(nn.Module):
 
     # DO THIS
     def forward(self, u: torch.Tensor):
-        """
-        u: (T, B, nin)
-        returns:
-          logits:
-            - lastSoftmax: (B, nout) pre-softmax logits (we apply CE directly)
-            - softmax: (T*B, nout) logits for all steps flattened
-            - lastLinear: (B, nout) regression output
-          h: (T, B, nhid)
-        """
         T, B, _ = u.shape
+        h_t = torch.zeros(B, self.nhid, device=u.device, dtype=u.dtype)
+        h_seq = []
 
-        # If classif_type is lastSoftmax or lastLinear, you should compute the logits
-        # at every step but only return the last step's logits. If classif_type is softmax, you should compute the logits at
-        # every step and return all of them flattened into (T*B, nout).
-        # Final return signature looks like `logits, h`.
+        for t in range(T):
+            # Recurrence: h_t = act(x_t*W_uh + h_{t-1}*W_hh + b_hh) 
+            pre_act = torch.mm(u[t], self.W_uh) + torch.mm(h_t, self.W_hh) + self.b_hh
+            h_t = self.act(pre_act)
+            h_seq.append(h_t)
 
-    # ---- small helpers used by train.py diagnostics / saving ----
+        h_seq = torch.stack(h_seq) # (T, B, H)
+        
+        # Output head: o_t = h_t*W_hy + b_hy [cite: 20]
+        if self.classif_type == "softmax":
+            logits = torch.mm(h_seq.view(T * B, self.nhid), self.W_hy) + self.b_hy
+        else:
+            logits = torch.mm(h_seq[-1], self.W_hy) + self.b_hy
+            
+        return logits, h_seq
     supports_omega: bool = True
 
     def saturation_distance_from_h(self, h: torch.Tensor) -> torch.Tensor:
@@ -161,7 +165,7 @@ class VanillaRNN(nn.Module):
     # DO THIS
     def recurrent_weight_for_rho(self) -> torch.Tensor:
         # This needs to return the recurrent weight matrix.
-        pass
+         return self.W_hh [cite: 22]
 
     def numpy_state(self) -> dict:
         return {
@@ -248,7 +252,7 @@ class GRUModel(nn.Module):
     def recurrent_weight_for_rho(self) -> torch.Tensor:
         # This needs to return the recurrent weight matrix. There are multiple in
         # the case of the GRU: return the candidate one similar to the RNN case.
-        pass
+        return self.W_hh [cite: 34]
 
     def numpy_state(self) -> dict:
         return {
@@ -270,17 +274,46 @@ class GRUModel(nn.Module):
 
     # DO THIS
     def forward(self, u: torch.Tensor, return_extras: bool = False):
-        """u: (T,B,nin). Returns (logits_or_y, h, extras?)."""
         T, B, _ = u.shape
-        # If lastSoftmax or lastLinear, return only the logits and the last step's output. If softmax, return the logits and
-        # all steps' outputs flattened into (T*B, nout). Final return signature looks like `logits, h`.
-        # Additionally, if return_extras is True, your return signature should be `logits, h, extras` where
-        # extras is a dict containing the gate pre-activations and candidate pre-activation for all steps, stacked into tensors of shape (T, B, nhid):
-        #   - "z": pre-activation of update gate z
-        #   - "r": pre-activation of reset gate r
-        #   - "h_tilde": pre-activation of candidate h_tilde
-        # See the math in the assignment PDF for details.
-        raise ValueError(f"Unknown classif_type={self.classif_type}")
+        h_t = torch.zeros(B, self.nhid, device=u.device, dtype=u.dtype)
+        h_seq, z_seq, r_seq, h_tilde_pre_seq = [], [], [], []
+
+        for t in range(T):
+            x_t = u[t]
+            # Equations from assignment 
+            z_pre = torch.mm(x_t, self.W_uz) + torch.mm(h_t, self.W_hz) + self.b_z
+            r_pre = torch.mm(x_t, self.W_ur) + torch.mm(h_t, self.W_hr) + self.b_r
+            
+            z_t = torch.sigmoid(z_pre)
+            r_t = torch.sigmoid(r_pre)
+            
+            h_tilde_pre = torch.mm(x_t, self.W_uh) + torch.mm(r_t * h_t, self.W_hh) + self.b_h
+            h_tilde = torch.tanh(h_tilde_pre)
+            
+            h_t = (1 - z_t) * h_t + z_t * h_tilde
+            
+            h_seq.append(h_t)
+            if return_extras:
+                z_seq.append(z_pre)
+                r_seq.append(r_pre)
+                h_tilde_pre_seq.append(h_tilde_pre)
+
+        h_seq = torch.stack(h_seq)
+        
+        if self.classif_type == "softmax":
+            logits = torch.mm(h_seq.view(T * B, self.nhid), self.W_hy) + self.b_y
+        else:
+            logits = torch.mm(h_seq[-1], self.W_hy) + self.b_y
+
+        if return_extras:
+            extras = {
+                "z": torch.stack(z_seq),
+                "r": torch.stack(r_seq),
+                "h_tilde": torch.stack(h_tilde_pre_seq)
+            }
+            return logits, h_seq, extras
+        
+        return logits, h_seq
 
 
 def make_model(

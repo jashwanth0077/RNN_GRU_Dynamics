@@ -15,13 +15,13 @@ from model import make_model
 # DO THIS
 def _sigmoid_sat_dist(v: torch.Tensor) -> torch.Tensor:
     # v in [0,1]
-    pass
+    return torch.min(v, 1.0 - v)
 
 
 # DO THIS
 def _tanh_sat_dist(v: torch.Tensor) -> torch.Tensor:
     # v in [-1,1]
-    pass
+    return 1.0 - torch.abs(v)
 
 
 def _hidden_sat_time(model, h: torch.Tensor) -> torch.Tensor:
@@ -135,33 +135,44 @@ def omega_regularizer_and_gradW_hh(model, loss: torch.Tensor, h: torch.Tensor, b
 
 # DO THIS
 def grad_time_profile(task, model, x: torch.Tensor, y_onehot: torch.Tensor, collect_extras: bool = False):
-    """
-    Compute gradient-through-time profile on a fixed diagnostic batch.
-    Returns: loss (scalar), err (scalar), g_t (T,), a_t (T,), sat_t (T,), z_sat_t (T,|None), r_sat_t (T,|None)
-      g_t[t] = mean_b || dL/dh_t ||_2
-      a_t[t] = mean_{b,h} activation derivative at h_t
-    """
-    # Set model zero grad and call the loss function.
-    # Compute gradient of loss wrt h and find the norm. This is g_t.
-    # Then compute a_t as the mean activation derivative and saturation distances.
-    # Then sat_t using _hidden_sat_time.
-    # Then if extras was passed in and is a dict, and the model is GRU,
-    # also compute z_sat_t and r_sat_t using _sigmoid_sat_dist on the gate pre-activations.
+    # 1. Prepare model and data
+    model.zero_grad()
+    x.requires_grad = True # Ensure we can take grad wrt hidden states via x's graph
+    
+    # 2. Forward pass [cite: 23, 31]
+    loss, err, _, h, extras = compute_loss_and_error(task, model, x, y_onehot, return_extras=collect_extras)
+    
+    # 3. Compute gradients wrt hidden states (T, B, H) [cite: 43]
+    # This gives us dL/dh_t for all t
+    d_h = torch.autograd.grad(loss, h, retain_graph=True)[0]
+    
+    # 4. g_t: mean over batch of ||dL/dh_t||_2 [cite: 41, 42, 43]
+    g_t = torch.norm(d_h, p=2, dim=2).mean(dim=1)
+    
+    # 5. a_t: mean activation derivative
+    # Note: For GRU, this is usually calculated on the candidate h_tilde
+    a_t = model.act_deriv_from_h(h).mean(dim=(1, 2))
+    
+    # 6. sat_t: hidden saturation distance [cite: 50]
+    sat_t = _hidden_sat_time(model, h)
+    
+    # 7. Gate diagnostics (GRU only) [cite: 33, 53, 62]
+    z_sat_t, r_sat_t = None, None
+    if collect_extras and extras is not None:
+        # Use the sigmoid helper on the actual gate values (after sigmoid)
+        z_sat_t = _sigmoid_sat_dist(torch.sigmoid(extras["z"])).mean(dim=(1, 2))
+        r_sat_t = _sigmoid_sat_dist(torch.sigmoid(extras["r"])).mean(dim=(1, 2))
 
-    return (
-        loss.detach(),
-        err.detach(),
-        g_t.detach(),
-        a_t.detach(),
-        sat_t.detach(),
-        None if z_sat_t is None else z_sat_t.detach(),
-        None if r_sat_t is None else r_sat_t.detach(),
-    )
-
+    return loss, err, g_t, a_t, sat_t, z_sat_t, r_sat_t
 
 # DO THIS
 def global_grad_norm(params):
-    pass
+    total_norm = 0.0
+    for p in params:
+        if p.grad is not None:
+            param_norm = p.grad.data.norm(2)
+            total_norm += param_norm.item() ** 2
+    return total_norm ** 0.5
 
 def clip_rescale(params, cutoff: float):
     # rescale grads if global norm > cutoff
