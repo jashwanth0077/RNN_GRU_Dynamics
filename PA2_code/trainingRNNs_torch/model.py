@@ -1,4 +1,3 @@
-
 from __future__ import annotations
 import math
 import numpy as np
@@ -267,6 +266,11 @@ class GRUModel(nn.Module):
         # This needs to return the recurrent weight matrix. There are multiple in
         # the case of the GRU: return the candidate one similar to the RNN case.
         return self.W_hh
+    
+    
+
+    def act_deriv_from_h(self, h: torch.Tensor) -> torch.Tensor:
+        return 1.0 - h * h
 
     def numpy_state(self) -> dict:
         return {
@@ -288,45 +292,61 @@ class GRUModel(nn.Module):
 
     # DO THIS
     def forward(self, u: torch.Tensor, return_extras: bool = False):
-        """u: (T,B,nin). Returns (logits_or_y, h, extras?)."""
+
         T, B, _ = u.shape
         h_t = torch.zeros(B, self.nhid, device=u.device, dtype=u.dtype)
-        h_seq, z_seq, r_seq, h_tilde_pre_seq = [], [], [], []
+
+        h_seq = []
+        z_seq = []
+        r_seq = []
+        h_tilde_pre_seq = []
 
         for t in range(T):
+
             x_t = u[t]
-            
-            z_pre = torch.mm(x_t, self.W_uz) + torch.mm(h_t, self.W_hz) + self.b_z
-            r_pre = torch.mm(x_t, self.W_ur) + torch.mm(h_t, self.W_hr) + self.b_r
-            
-            z_t = torch.sigmoid(z_pre)
-            r_t = torch.sigmoid(r_pre)
-            
-            h_tilde_pre = torch.mm(x_t, self.W_uh) + torch.mm(r_t * h_t, self.W_hh) + self.b_h
+
+            z_t = torch.sigmoid(
+                torch.mm(x_t, self.W_uz) +
+                torch.mm(h_t, self.W_hz) +
+                self.b_z
+            )
+
+            r_t = torch.sigmoid(
+                torch.mm(x_t, self.W_ur) +
+                torch.mm(h_t, self.W_hr) +
+                self.b_r
+            )
+
+            h_tilde_pre = (
+                torch.mm(x_t, self.W_uh) +
+                torch.mm(r_t * h_t, self.W_hh) +
+                self.b_h
+            )
+
             h_tilde = torch.tanh(h_tilde_pre)
-            
+
             h_t = (1 - z_t) * h_t + z_t * h_tilde
-            
+
             h_seq.append(h_t)
+
             if return_extras:
-                z_seq.append(z_pre)
-                r_seq.append(r_pre)
+                z_seq.append(z_t)
+                r_seq.append(r_t)
                 h_tilde_pre_seq.append(h_tilde_pre)
 
-        h_seq = torch.stack(h_seq)
-        
-        # If lastSoftmax or lastLinear, return only the logits and the last step's output. If softmax, return the logits and
-        # all steps' outputs flattened into (T*B, nout). Final return signature looks like `logits, h`.
+        h_seq = torch.stack(h_seq, dim=0)   # (T,B,H)
+
         if self.classif_type == "softmax":
-            logits = torch.mm(h_seq.view(T * B, self.nhid), self.W_hy) + self.b_y
+            logits = torch.mm(
+                h_seq.view(T * B, self.nhid),
+                self.W_hy
+            ) + self.b_y
         else:
-            logits = torch.mm(h_seq[-1], self.W_hy) + self.b_y
-        
-        # Additionally, if return_extras is True, your return signature should be `logits, h, extras` where
-        # extras is a dict containing the gate pre-activations and candidate pre-activation for all steps, stacked into tensors of shape (T, B, nhid):
-        #   - "z": pre-activation of update gate z
-        #   - "r": pre-activation of reset gate r
-        #   - "h_tilde": pre-activation of candidate h_tilde
+            logits = torch.mm(
+                h_seq[-1],
+                self.W_hy
+            ) + self.b_y
+
         if return_extras:
             extras = {
                 "z": torch.stack(z_seq),
@@ -334,7 +354,6 @@ class GRUModel(nn.Module):
                 "h_tilde": torch.stack(h_tilde_pre_seq)
             }
             return logits, h_seq, extras
-        
         return logits, h_seq
 
 
