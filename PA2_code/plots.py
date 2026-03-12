@@ -61,6 +61,6 @@ def analyze_run(name):
         plt.close()
 
 # List of experiments
-runs = ["A1_mem_rnn_tanh_noclip", "A2_mem_rnn_tanh_clip005", "A4_mem_gru_noclip", "B1_mul_rnn_tanh_noclip"]
+runs = ["A1_mem_rnn_tanh_noclip", "A2_mem_rnn_tanh_clip005", "A3_mem_rnn_tanh_clip001", "A4_mem_gru_noclip", "A5_mem_gru_clip005", "B1_mul_rnn_tanh_noclip", "B2_mul_rnn_tanh_noclip"]
 for r in runs:
     analyze_run(r)
